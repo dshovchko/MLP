@@ -2,12 +2,11 @@
 
 /*
  * Textpattern Content Management System
- * http://textpattern.com
+ * https://textpattern.com/
  *
- * Copyright (C) 2016 The Textpattern Development Team
+ * Copyright (C) 2018 The Textpattern Development Team
  *
- * This file is part of Textpattern, modified by the Multi-lingual
- * Publishing Pack (MLP).
+ * This file is part of Textpattern.
  *
  * Textpattern is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -19,7 +18,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with Textpattern. If not, see <http://www.gnu.org/licenses/>.
+ * along with Textpattern. If not, see <https://www.gnu.org/licenses/>.
  */
 
 /**
@@ -192,7 +191,7 @@ class DB
         if (isset($txpcfg['client_flags'])) {
             $this->client_flags = $txpcfg['client_flags'];
         } else {
-            $this->client_flags = 0;
+            $this->client_flags = MYSQLI_CLIENT_FOUND_ROWS;
         }
 
         if (isset($txpcfg['dbcharset'])) {
@@ -215,7 +214,7 @@ class DB
         $connected = true;
 
         // Be backwards compatible.
-        if ($this->charset && (intval($version[0]) >= 5 || preg_match('#^4\.[1-9]#', $version))) {
+        if ($this->charset && (version_compare($version, '5') >= 0 || preg_match('#^4\.[1-9]#', $version))) {
             mysqli_query($this->link, "SET NAMES ".$this->charset);
             $this->table_options['charset'] = $this->charset;
 
@@ -390,6 +389,7 @@ function safe_escape_like($in = '')
 function safe_query($q = '', $debug = false, $unbuf = false)
 {
     global $DB, $trace, $production_status;
+
     $method = ($unbuf) ? MYSQLI_USE_RESULT : MYSQLI_STORE_RESULT;
 
     if (!$q) {
@@ -501,10 +501,10 @@ function safe_insert($table, $set, $debug = false)
 /**
  * Inserts a new row, or updates an existing if a matching row is found.
  *
- * @param  string $table The table
- * @param  string $set   The set clause
- * @param  string $where The where clause
- * @param  bool   $debug Dump query
+ * @param  string       $table The table
+ * @param  string       $set   The set clause
+ * @param  string|array $where The where clause
+ * @param  bool         $debug Dump query
  * @return int|bool The last generated ID or FALSE on error. If the ID is 0, returns TRUE
  * @example
  * if ($r = safe_upsert('myTable', "data = 'foobar'", "name = 'example'"))
@@ -516,13 +516,21 @@ function safe_insert($table, $set, $debug = false)
 function safe_upsert($table, $set, $where, $debug = false)
 {
     global $DB;
+
+    if (is_array($set)) {
+        $set = join_qs(quote_list($set), ',');
+    }
+
+    $whereset = is_array($where) ? join_qs(quote_list($where), null) : array($where);
+    $where = implode(' AND ', $whereset);
+
     // FIXME: lock the table so this is atomic?
     $r = safe_update($table, $set, $where, $debug);
 
-    if ($r and (mysqli_affected_rows($DB->link) or safe_count($table, $where, $debug))) {
+    if ($r && (mysqli_affected_rows($DB->link) || safe_count($table, $where, $debug))) {
         return $r;
     } else {
-        return safe_insert($table, join(', ', array($where, $set)), $debug);
+        return safe_insert($table, join(', ', array(implode(', ', $whereset), $set)), $debug);
     }
 }
 
@@ -1321,12 +1329,12 @@ function getTree($root, $type, $where = "1 = 1", $tbl = 'txp_category')
         }
 
         $out[] = array(
-            'id' => $id,
-            'name' => $name,
-            'title' => $title,
-            'level' => count($right),
+            'id'       => $id,
+            'name'     => $name,
+            'title'    => $title,
+            'level'    => count($right),
             'children' => ($rgt - $lft - 1) / 2,
-            'parent' => $parent,
+            'parent'   => $parent,
         );
 
         $right[] = $rgt;
@@ -1380,6 +1388,8 @@ function getTreePath($target, $type, $tbl = 'txp_category')
             'id' => $id,
             'name' => $name,
             'title' => $title,
+            'description' => $description,
+            'type' => $type,
             'level' => count($right),
             'children' => ($rgt - $lft - 1) / 2,
         );
@@ -1404,14 +1414,18 @@ function getTreePath($target, $type, $tbl = 'txp_category')
 
 function rebuild_tree($parent, $left, $type, $tbl = 'txp_category')
 {
-    $left = assert_int($left);
+    $left = intval($left);
     $right = $left + 1;
 
+    $parents[] = $parent;
     $parent = doSlash($parent);
-    $type = doSlash($type);
+    $stype = doSlash($type);
 
-    $result = safe_column("name", $tbl,
-        "parent = '$parent' AND type = '$type' ORDER BY name");
+    $result = safe_column(
+        "name",
+        $tbl,
+        "parent = '$parent' AND type = '$stype' ORDER BY name"
+    );
 
     foreach ($result as $row) {
         $right = rebuild_tree($row, $right, $type, $tbl);
@@ -1420,7 +1434,7 @@ function rebuild_tree($parent, $left, $type, $tbl = 'txp_category')
     safe_update(
         $tbl,
         "lft = $left, rgt = $right",
-        "name = '$parent' AND type = '$type'"
+        "name = '$parent' AND type = '$stype'"
     );
 
     return $right + 1;
@@ -1438,10 +1452,17 @@ function rebuild_tree($parent, $left, $type, $tbl = 'txp_category')
 
 function rebuild_tree_full($type, $tbl = 'txp_category')
 {
+    $stype = doSlash($type);
     // Fix circular references, otherwise rebuild_tree() could get stuck in a loop.
-    safe_update($tbl, "parent = ''", "type = '".doSlash($type)."' AND name = 'root'");
-    safe_update($tbl, "parent = 'root'", "type = '".doSlash($type)."' AND parent = name");
+    safe_update($tbl, "parent = ''", "type = '".$stype."' AND name = 'root'");
+    safe_update($tbl, "lft = 0, rgt = 0", "type = '".$stype."'");
     rebuild_tree('root', 1, $type, $tbl);
+
+    // Attach lost nodes to root
+    if (safe_count($tbl, "type = '".$stype."' AND rgt = 0")) {
+        safe_update($tbl, "parent = 'root'", "type = '".$stype."' AND rgt = 0");
+        rebuild_tree('root', 1, $type, $tbl);
+    }
 }
 
 /**
@@ -1472,6 +1493,7 @@ function db_down()
 <html lang="en">
 <head>
     <meta charset="utf-8">
+    <meta name="robots" content="noindex">
     <title>Database unavailable</title>
 </head>
 <body>
@@ -1501,7 +1523,7 @@ function now($type, $update = false)
     static $nows = array();
     static $time = null;
 
-    if (!in_array($type, array('posted', 'expires', 'created'))) {
+    if (!in_array($type = strtolower($type), array('posted', 'expires', 'created'))) {
         return false;
     }
 
