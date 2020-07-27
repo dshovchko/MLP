@@ -4,7 +4,7 @@
  * Textpattern Content Management System
  * https://textpattern.com/
  *
- * Copyright (C) 2018 The Textpattern Development Team
+ * Copyright (C) 2020 The Textpattern Development Team
  *
  * This file is part of Textpattern.
  *
@@ -33,13 +33,6 @@ if (!defined('PFX')) {
      */
 
     define('PFX', !empty($txpcfg['table_prefix']) ? $txpcfg['table_prefix'] : '');
-}
-
-if (version_compare(PHP_VERSION, '5.3.0') < 0) {
-    // We are deliberately using a deprecated function for PHP 4 compatibility.
-    if (get_magic_quotes_runtime()) {
-        set_magic_quotes_runtime(0);
-    }
 }
 
 /**
@@ -116,6 +109,14 @@ class DB
     public $client_flags = 0;
 
     /**
+     * SSL parameters.
+     *
+     * @var string
+     */
+
+    public $ssl;
+
+    /**
      * Database connection charset.
      *
      * @var   string
@@ -165,6 +166,10 @@ class DB
     {
         global $txpcfg, $connected, $mlp;
 
+        $client_flags = MYSQLI_CLIENT_FOUND_ROWS;
+
+        $this->link = mysqli_init();
+
         if (strpos($txpcfg['host'], ':') === false) {
             $this->host = $txpcfg['host'];
             $this->port = ini_get("mysqli.default_port");
@@ -179,10 +184,47 @@ class DB
             $this->socket = ini_get("mysqli.default_socket");
         }
 
+        if (isset($txpcfg['ssl']) && is_array($txpcfg['ssl'])) {
+            $client_flags = $client_flags | MYSQLI_CLIENT_SSL;
+
+            foreach (array('key', 'cert', 'ca', 'capath', 'ciphers') as $ssl_param) {
+                if (isset($txpcfg['ssl'][$ssl_param])) {
+                    $this->ssl[$ssl_param] = $txpcfg['ssl'][$ssl_param];
+                } else {
+                    $this->ssl[$ssl_param] = null;
+                }
+            }
+
+            if (isset($txpcfg['ssl']['flags']) && is_array($txpcfg['ssl']['flags'])) {
+                foreach ($txpcfg['ssl']['flags'] as $ssl_flag => $ssl_flag_value) {
+                    switch ($ssl_flag_value) {
+                        case 'true':
+                            mysqli_options($this->link, $ssl_flag, true);
+                            break;
+                        case 'false':
+                            mysqli_options($this->link, $ssl_flag, false);
+                            break;
+                        default:
+                            mysqli_options($this->link, $ssl_flag, $ssl_flag_value);
+                            break;
+                    }
+                }
+            }
+
+            mysqli_ssl_set(
+                $this->link,
+                $this->ssl['key'],
+                $this->ssl['cert'],
+                $this->ssl['ca'],
+                $this->ssl['capath'],
+                $this->ssl['ciphers']
+            );
+        }
+
         $this->db = $txpcfg['db'];
         $this->user = $txpcfg['user'];
         $this->pass = $txpcfg['pass'];
-        $this->table_options['type'] = 'MyISAM';
+        $this->table_options['type'] = !empty($txpcfg['dbengine']) ? $txpcfg['dbengine'] : 'MyISAM';
 
         if (!empty($txpcfg['table_prefix'])) {
             $this->table_prefix = $txpcfg['table_prefix'];
@@ -191,14 +233,12 @@ class DB
         if (isset($txpcfg['client_flags'])) {
             $this->client_flags = $txpcfg['client_flags'];
         } else {
-            $this->client_flags = MYSQLI_CLIENT_FOUND_ROWS;
+            $this->client_flags = $client_flags;
         }
 
         if (isset($txpcfg['dbcharset'])) {
             $this->charset = $txpcfg['dbcharset'];
         }
-
-        $this->link = mysqli_init();
 
         // Suppress screen output from mysqli_real_connect().
         $error_reporting = error_reporting();
@@ -229,7 +269,7 @@ class DB
 
         // Use "ENGINE" if version of MySQL > (4.0.18 or 4.1.2).
         if (version_compare($version, '5') >= 0 || preg_match('#^4\.(0\.[2-9]|(1[89]))|(1\.[2-9])#', $version)) {
-            $this->table_options['engine'] = 'MyISAM';
+            $this->table_options['engine'] = $this->table_options['type'];
             unset($this->table_options['type']);
         }
 
@@ -860,24 +900,36 @@ function safe_field($thing, $table, $where, $debug = false)
  * @return array
  */
 
-function safe_column($thing, $table, $where, $debug = false)
+function safe_column($thing, $table, $where = '1', $debug = false)
 {
     global $mlp;
 
+    if (is_array($thing)) {
+        list($index, $thing) = $thing + array(null, '*');
+        $multiple = $thing === '*' || strpos($thing, ',') !== false;
+        $things = $thing === '*' ? $thing : implode(',', do_list_unique($index.','.$thing));
+    } else {
+        $things = $thing;
+    }
+
     $thing = $mlp->safe_remap_fields($thing, $table);
-    $q = "SELECT $thing FROM ".safe_pfx_j($table)." WHERE $where";
+    $q = "SELECT $things FROM ".safe_pfx_j($table)." WHERE $where";
     $rs = getRows($q, $debug);
 
     if ($rs) {
-        foreach ($rs as $a) {
-            $v = array_shift($a);
-            $out[$v] = $v;
+        if (isset($index) && isset($rs[0][$index])) {
+            $out = array_column($rs, $multiple ? null : $thing, $index);
+        } elseif (isset($rs[0][$thing])) {
+            $out = array_column($rs, $thing, $thing);
+        } else {
+            foreach ($rs as $a) {
+                $v = array_shift($a);
+                $out[$v] = $v;
+            }
         }
-
-        return $out;
     }
 
-    return array();
+    return empty($out) ? array() : $out;
 }
 
 /**
@@ -955,7 +1007,7 @@ function safe_row($things, $table, $where, $debug = false)
  * @param  string $table  The table
  * @param  string $where  The where clause
  * @param  bool   $debug  Dump query
- * @return array  Returns an empty array if no mathes are found
+ * @return array  Returns an empty array if no matches are found
  * @see    safe_row()
  * @see    safe_rows_start()
  * @uses   getRows()
@@ -989,7 +1041,7 @@ function safe_rows($things, $table, $where, $debug = false)
  * @param  string        $table  The table
  * @param  string        $where  The where clause
  * @param  bool          $debug  Dump query
- * @return resource|bool A result resouce or FALSE on error
+ * @return resource|bool A result resource or FALSE on error
  * @see    nextRow()
  * @see    numRows()
  * @example
@@ -1155,7 +1207,7 @@ function getRows($query, $debug = false)
 /**
  * Executes an SQL statement and returns results.
  *
- * This function is indentical to safe_query() apart from the missing
+ * This function is identical to safe_query() apart from the missing
  * $unbuf argument.
  *
  * @param  string $query The SQL statement to execute
@@ -1288,56 +1340,113 @@ function getCount($table, $where, $debug = false)
  *
  * This function is used by categories.
  *
- * @param  string $root  The root
+ * @param  string $root  The roots
  * @param  string $type  The type
  * @param  string $where The where clause
  * @param  string $tbl   The table
  * @return array
  */
 
-function getTree($root, $type, $where = "1 = 1", $tbl = 'txp_category')
+function getTree($root, $type = 'article', $where = "1 = 1", $tbl = 'txp_category', $depth = true)
 {
-    $root = doSlash($root);
-    $type = doSlash($type);
+    if (is_array($root)) {
+        $names = true;
+    } else {
+        $root = do_list_unique($root);
+    }
 
-    $rs = safe_row(
-        "lft AS l, rgt AS r",
-        $tbl,
-        "name = '$root' AND type = '$type'"
-    );
-
-    if (!$rs) {
+    if (empty($root)) {
         return array();
     }
 
-    extract($rs);
+    if ($depth && $depth !== true) {
+        $levels = array_map('intval', do_list($depth, array(',', '-')));
+    }
 
-    $out = array();
+    $type = doSlash($type);
+    $out = $border = array();
+
+    $rows = safe_rows(
+        "lft AS l, rgt AS r",
+        $tbl,
+        "name IN ('".implode("','", doSlash($root))."') AND type = '$type'"
+    );
+
+    foreach ($rows as $rs) {
+        extract($rs);
+        $border[] = $depth ? "lft BETWEEN $l AND $r" : "lft=$l AND rgt=$r";
+    }
+
+    $border = implode(' OR ', $border);
     $right = array();
 
-    $rs = safe_rows_start(
-        "id, name, lft, rgt, parent, title",
+    $rs = $border ? safe_rows_start(
+        isset($names) ? "id, name, lft, rgt" : "id, name, lft, rgt, parent, title",
         $tbl,
-        "lft BETWEEN $l AND $r AND type = '$type' AND name != 'root' AND $where ORDER BY lft ASC"
-    );
+        "($border) AND type = '$type' AND name != 'root' AND $where ORDER BY lft ASC"
+    ) : null;
 
     while ($rs and $row = nextRow($rs)) {
         extract($row);
 
-        while (count($right) > 0 && $right[count($right) - 1] < $rgt) {
+        while (($level = count($right)) > 0 && $right[count($right) - 1] < $rgt) {
             array_pop($right);
         }
 
-        $out[] = array(
-            'id'       => $id,
-            'name'     => $name,
-            'title'    => $title,
-            'level'    => count($right),
-            'children' => ($rgt - $lft - 1) / 2,
-            'parent'   => $parent,
-        );
+        if (!isset($levels) || in_array($level, $levels)) {
+            if (isset($names)) {
+                $out[$id] = $name;
+            } else {
+                $out[] = array(
+                    'id'       => $id,
+                    'name'     => $name,
+                    'title'    => $title,
+                    'level'    => $level,
+                    'children' => ($rgt - $lft - 1) / 2,
+                    'parent'   => $parent,
+                );
+            }
+        }
 
         $right[] = $rgt;
+    }
+
+    return $out;
+}
+
+/**
+ * Gets a target/path/up/to/root array.
+ *
+ * This function is used by categories.
+ *
+ * @param  string $target The target
+ * @param  string $type   The category type
+ * @param  string $tbl    The table
+ * @param  string $root   The root (excluded)
+ * @return array
+ */
+
+function getRootPath($target, $type = 'article', $tbl = 'txp_category', $root = 'root')
+{
+    static $cache = array(
+        'article' => array(),
+        'file'    => array(),
+        'image'   => array(),
+        'link'    => array()
+    );
+    $out = array();
+
+    if (!isset($cache[$type])) {
+        return $out;
+    } elseif (empty($cache[$type])) {
+        foreach (safe_rows('id, name, parent, title, description', $tbl, "type = '".doSlash($type)."'") as $row) {
+            $cache[$type][$row['name']] = $row;
+        }
+    }
+
+    while ($target !== $root && isset($cache[$type][$target])) {
+        $out[] = $cache[$type][$target];
+        $target = $cache[$type][$target]['parent'];
     }
 
     return $out;
@@ -1510,10 +1619,10 @@ eod;
  * This function can be used when constructing SQL SELECT queries as a
  * replacement for the NOW() function to allow the SQL server to cache the
  * queries. Should only be used when comparing with the Posted or Expired
- * columns from the textpattern (articles) table or the Created column from
- * the txp_file table.
+ * columns from the textpattern (articles) table, the Created column from
+ * the txp_file table or the Date column from the txp_link table.
  *
- * @param  string $type   Column name, lower case (one of 'posted', 'expires', 'created')
+ * @param  string $type   Column name, lower case (one of 'posted', 'expires', 'created', 'date')
  * @param  bool   $update Force update
  * @return string SQL query string partial
  */
@@ -1523,7 +1632,7 @@ function now($type, $update = false)
     static $nows = array();
     static $time = null;
 
-    if (!in_array($type = strtolower($type), array('posted', 'expires', 'created'))) {
+    if (!in_array($type = strtolower($type), array('posted', 'expires', 'created', 'date'))) {
         return false;
     }
 
@@ -1538,7 +1647,7 @@ function now($type, $update = false)
         $now = get_pref($pref, $time - 1);
 
         if ($time > $now or $update) {
-            $table = ($type === 'created') ? 'txp_file' : 'textpattern';
+            $table = ($type === 'date') ? 'txp_link' : (($type === 'created') ? 'txp_file' : 'textpattern');
             $where = '1=1 having utime > '.$time.' order by utime asc limit 1';
             $now = safe_field('unix_timestamp('.$type.') as utime', $table, $where);
             $now = ($now === false) ? 2147483647 : intval($now) - 1;

@@ -399,6 +399,7 @@ class MLPArticles
 		else
 			$rs = safe_rows_start('*', L10N_ARTICLES_TABLE, "$criteria order by $sort_sql limit $offset, $limit" );
 		return $rs;
+		//return mysqli_fetch_array($rs, MYSQLI_NUM);
 		}
 	static function check_groups()
 		{
@@ -3625,7 +3626,9 @@ class MLPArticleView extends GBPAdminTabView
 		foreach( $source as $k => $v )
 			{
 			$v = doSlash( $v );
-			if( $v === 'now()' )
+			if( $k === 'Expires' && $v === '')
+				$insert[] = "`$k`= NULL";
+			else if( $v === 'now()' )
 				$insert[] = "`$k`= $v";
 			else
 				$insert[] = "`$k`='$v'";
@@ -4098,7 +4101,7 @@ class MLPArticleView extends GBPAdminTabView
 		#	Use values from the pager to grab the right sections of the table.
 		#
 		$articles = MLPArticles::get_articles( '1=1' , $sortby , $offset , $limit );
-		if( count( $articles ) )
+		if( $articles->num_rows )
 			{
 			while( $article = nextRow($articles) )
 				{

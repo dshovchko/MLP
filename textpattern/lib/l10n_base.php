@@ -75,14 +75,18 @@ function _l10n_load_localised_pref( $name )
 
 function _l10n_replace_snippet( $m )
 	{
-	global $l10n_language, $textarray;
+	global $l10n_language;
+	static $_l10n_langs;
 	static $l = false;
 	
 	if( !$l ) $l = 	$l10n_language['long'];
+	isset($_l10n_langs) or $_l10n_langs = array();
+	isset($_l10n_langs[$l]) or $_l10n_langs[$l] = Txp::get('\Textpattern\L10n\Lang')->load($l10n_language['short']);
 
 	#$s = strtolower( $m[1] ); # Allow case sensitive snippet names?
 	$s = $m[1];
-	$r = @$textarray[$s];
+	//$r = @$textarray[$s];
+	$r = @$_l10n_langs[$l][$s];
 	if( !$r )
 		return $s;
 	return $r;	
@@ -504,7 +508,8 @@ class MLPLanguageHandler
 		$result = array();
 		$result['short'] 	= @substr( $long_code , 0 , 2 );
 		$result['country']  = @substr( $long_code , 3 , 2 );
-		$result['long'] = '';
+		//$result['long'] = '';
+		$result['long'] = $long_code;
 
 		if( isset( $result['country'] ) and (2 == strlen($result['country'])) )
 			$result['long'] = $long_code;

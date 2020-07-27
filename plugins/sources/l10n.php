@@ -17,7 +17,7 @@ $plugin['name'] = 'l10n';
 // 1 = Plugin help is in raw HTML.  Not recommended.
 # $plugin['allow_html_help'] = 1;
 
-$plugin['version'] = '4.6.2.20170316';
+$plugin['version'] = '4.8.1.20200724';
 $plugin['author'] = 'Graeme Porteous, Steve Dickinson, Stef Dawson, Dmitry Shovchko';
 $plugin['author_uri'] = 'https://github.com/Bloke/MLP';
 $plugin['description'] = 'Multi-Lingual Publishing Package.';
@@ -217,7 +217,7 @@ function _l10n_process_url( $use_get_params=false )
 		echo br , var_dump( $parts );
 		#global $plugin_callback;
 		#foreach( $plugin_callback as $cb )
-		#	if( $cb['event'] === 'pretext' )
+		#	if( $cb['event'] === 'pretext-inner' )
 		#		echo br , var_dump( $cb );
 		}
 
@@ -500,11 +500,11 @@ if (@txpinterface === 'public')
 	global $plugin_callback;
 	if( is_array( $plugin_callback ) )
 		{
-		$cback = array('function'=>'_l10n_pretext', 'event'=>'pretext', 'step'=>'', 'pre'=>0 );
+		$cback = array('function'=>'_l10n_pretext', 'event'=>'pretext-inner', 'step'=>'', 'pre'=>0 );
 		array_unshift($plugin_callback, $cback);
 		}
 	else
-		register_callback( '_l10n_pretext' 					, 'pretext' );
+		register_callback( '_l10n_pretext' 					, 'pretext-inner' );
 	register_callback( '_l10n_textpattern_comment_submit'	, 'textpattern' );
 	register_callback( '_l10n_tag_feeds'					, 'rss_entry' );
 	register_callback( '_l10n_tag_feeds'					, 'atom_entry' );
@@ -746,7 +746,7 @@ if (@txpinterface === 'public')
 		_l10n_make_exclusion_list();
 
 		global $l10n_replace_strings;
-                
+
 		# Insert the language code into all permlinks...
                 $l10n_replace_strings['start'] = ' href=["|\']';
                 $l10n_replace_strings['start_rep'] = ' href="';
@@ -775,7 +775,7 @@ if (@txpinterface === 'public')
 		$article_id = (int)$article_id;
 		$where = "`".L10N_COL_GROUP."`=$article_id and `Status` >= '$status' and `".L10N_COL_LANG."`<>'$exclude_lang'";
 		$rows = safe_rows_start( '*,ID as thisid, unix_timestamp(Posted) as posted' , L10N_MASTER_TEXTPATTERN , $where );
-		if( count( $rows ) )
+		if( $rows->num_rows )
 			{
 			while( $row = nextRow($rows) )
 				{
@@ -1025,7 +1025,7 @@ if (@txpinterface === 'public')
 			if( empty($id) )		# Try matching based on the standard permlink schemes...
 				{
 				extract( $parts );
-				//echo br , 'permlink_mode = ' , $prefs['permlink_mode'];
+				//echo br , 'permlink_mode = ' , $prefs['permlink_mode'], $u1;
 				switch($prefs['permlink_mode'])
 					{
 					case 'section_id_title':
